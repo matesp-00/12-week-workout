@@ -139,6 +139,9 @@ details.info .body{font-size:14.5px;color:var(--body);line-height:1.5;padding:2p
 .setgroup{margin-top:16px}
 .setlabel{font-size:12px;color:var(--dim);margin:0 0 7px;display:flex;justify-content:space-between;align-items:center}
 .stepper{display:flex;gap:6px;align-items:center}
+.useg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.useg button{padding:4px 11px;font-size:12.5px;color:var(--muted);background:transparent;line-height:1.5}
+.useg button.on{background:var(--chalk);color:var(--inv);font-weight:600}
 .stepper button{width:24px;height:24px;border-radius:7px;background:var(--surface2);color:var(--muted);font-size:15px;line-height:1;display:flex;align-items:center;justify-content:center}
 
 .setrow{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid rgba(47,52,60,.6)}
@@ -261,8 +264,18 @@ const store={
   get(){ try{ const r=localStorage.getItem(KEY); return r?JSON.parse(r):null; }catch(e){ return mem[KEY]||null; } },
   set(v){ const s=JSON.stringify(v); try{ localStorage.setItem(KEY,s); }catch(e){ mem[KEY]=JSON.parse(s); } }
 };
-const defaults={week:1,day:1,log:{},unit:'kg',beep:true,wuTimer:true,restHigh:false,round:2.5,theme:'auto'};
-let S=Object.assign({},defaults,store.get()||{});
+const defaults={week:1,day:1,log:{},unit:'kg',beep:true,wuTimer:true,restHigh:false,round:2.5,roundLb:5,theme:'auto',exUnit:{},dataV:2};
+const stored=store.get();
+let S=Object.assign({},defaults,stored||{});
+// every set logged before per exercise units gets stamped with the unit it was entered in
+(function migrate(){
+  if(!stored||stored.dataV>=2) return;
+  const u=S.unit||'kg';
+  Object.keys(S.log||{}).forEach(k=>{ const L=S.log[k]; if(!L||!L.ex)return;
+    Object.keys(L.ex).forEach(i=>{ const e=L.ex[i]; if(!e||!e.sets)return;
+      Object.keys(e.sets).forEach(sk=>{ if(!e.sets[sk].unit) e.sets[sk].unit=u; }); }); });
+  S.dataV=2;
+})();
 function save(){ store.set(S); }
 
 function prefersDark(){ try{ return window.matchMedia('(prefers-color-scheme:dark)').matches; }catch(e){ return true; } }
@@ -287,7 +300,17 @@ function parseRest(s){ const m=String(s).match(/(\d+)\s*-\s*(\d+)/); if(m)return
 function rangeLow(s){ const m=String(s).match(/(\d+)/); return m?+m[1]:1; }
 function rangeHigh(s){ const m=String(s).match(/(\d+)\s*-\s*(\d+)/); return m?+m[2]:rangeLow(s); }
 const WUP={1:[[60,'6-10']],2:[[50,'6-10'],[70,'4-6']],3:[[45,'6-10'],[65,'4-6'],[85,'3-4']],4:[[45,'6-10'],[60,'4-6'],[75,'3-5'],[85,'2-4']]};
-function roundW(x){ const r=S.round; return Math.round(x/r)*r; }
+function exUnitOf(name){ return (S.exUnit&&S.exUnit[name])||S.unit; }
+function setExUnit(name,u){
+  S.exUnit=S.exUnit||{}; S.exUnit[name]=u;
+  const L=S.log[key(S.week,S.day)], day=dayAt(S.week,S.day);
+  if(L&&day) day.e.forEach((ex,i)=>{ if(ex.n===name&&L.ex[i]) Object.keys(L.ex[i].sets).forEach(k=>{ L.ex[i].sets[k].unit=u; }); });
+  save(); render();
+}
+const LB=2.2046226218;
+function conv(v,from,to){ v=parseFloat(v)||0; if(!from||!to||from===to)return v; return from==='kg'?v*LB:v/LB; }
+function setUnit(r){ return (r&&r.unit)||S.unit; }
+function roundW(x,u){ const r=(u==='lb')?(S.roundLb||5):S.round; return Math.round(x/r)*r; }
 function fmtT(s){ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
 
 function dayLog(w,d,make){
@@ -323,7 +346,7 @@ function lastTime(name,beforeW,beforeD){
   });
   return best;
 }
-function ltText(lt){ return lt.rows.map(r=>(r.weight||'?')+S.unit+' x '+(r.reps||'?')).join(',  '); }
+function ltText(lt){ return lt.rows.map(r=>(r.weight||'?')+setUnit(r)+' x '+(r.reps||'?')).join(',  '); }
 
 /* ===================== audio ===================== */
 let AC=null;
@@ -502,6 +525,8 @@ function workoutHTML(){
   const refW=base||ltBase;
   const names=[ex.n,ex.s1,ex.s2].filter(Boolean);
   const shownName=names[E.sub]||ex.n;
+  const U=exUnitOf(ex.n);
+  const refU=base?U:(lt&&lt.rows[0]?setUnit(lt.rows[0]):U);
 
   const chips=visOrder(L,day).map(i=>{
     const e2=day.e[i]; let c='chip';
@@ -513,21 +538,23 @@ function workoutHTML(){
   const gwuCard=(!L.gwuSkipped&&!gwuDone&&st.sets===0)?generalWarmup(L):'';
 
   const wuRows=wuN>0?`<div class="setgroup">
-    <p class="setlabel"><span>Warm up sets${refW?' from '+refW+S.unit:''}</span>
+    <p class="setlabel"><span>Warm up sets${refW?' from '+roundW(conv(refW,refU,U),U)+U:''}</span>
       <span class="stepper"><button onclick="setWU(-1)">−</button><span class="num">${wuN}</span><button onclick="setWU(1)">+</button></span></p>
     ${wuPlan.map((p,i)=>{
       const r=E.sets['wu'+i]||{};
-      const wgt=refW?roundW(refW*p[0]/100):null;
+      const wgt=refW?roundW(conv(refW,refU,U)*p[0]/100,U):null;
       return `<div class="setrow">
         <button class="tick wu ${r.done?'on':''}" onclick="tickSet('wu${i}',${restLow>200?90:60},${restLow>200?120:90})">${r.done?'✓':'w'+(i+1)}</button>
-        <div class="setinfo"><div class="t1">${wgt?('<span class="num">'+wgt+'</span> '+S.unit):(p[0]+'% of working weight')}</div>
+        <div class="setinfo"><div class="t1">${wgt?('<span class="num">'+wgt+'</span> '+U):(p[0]+'% of working weight')}</div>
         <div class="t2">${p[0]}% for ${p[1]} reps</div></div>
       </div>`;}).join('')}
   </div>`:'';
 
   const wsRows=`<div class="setgroup">
     <p class="setlabel"><span>Working sets</span>
-      <span class="stepper"><button onclick="setWS(-1)">−</button><span class="num">${wsN}</span><button onclick="setWS(1)">+</button></span></p>
+      <span style="display:flex;gap:12px;align-items:center">
+        <span class="useg"><button class="${U==='kg'?'on':''}" onclick="setExUnit('${esc(ex.n).replace(/'/g,"\\'")}','kg')">kg</button><button class="${U==='lb'?'on':''}" onclick="setExUnit('${esc(ex.n).replace(/'/g,"\\'")}','lb')">lb</button></span>
+        <span class="stepper"><button onclick="setWS(-1)">−</button><span class="num">${wsN}</span><button onclick="setWS(1)">+</button></span></span></p>
     ${Array.from({length:wsN},(_,i)=>{
       const r=E.sets['w'+i]||{};
       const last=i===wsN-1;
@@ -537,7 +564,7 @@ function workoutHTML(){
         <div class="setinfo"><div class="t1">${esc(ex.r)} reps <span style="color:var(--dim)">at RPE ${esc(String(rpe).replace('~',''))}</span></div>
         <div class="t2">${last?(ex.t?esc(ex.t):'Last set, take it to failure'):'Leave a rep or two in the tank'}</div></div>
         <div class="inputs">
-          <div class="inpwrap"><input class="inp" inputmode="decimal" placeholder="${lt&&(lt.rows[i]||lt.rows[0])?esc((lt.rows[i]||lt.rows[0]).weight):'0'}" value="${esc(r.weight||'')}" oninput="setField('w${i}','weight',this.value)"><span>${S.unit}</span></div>
+          <div class="inpwrap"><input class="inp" inputmode="decimal" placeholder="${lt&&(lt.rows[i]||lt.rows[0])?esc((lt.rows[i]||lt.rows[0]).weight):'0'}" value="${esc(r.weight||'')}" oninput="setField('w${i}','weight',this.value)"><span>${(r.unit||U)}</span></div>
           <div class="inpwrap"><input class="inp" inputmode="numeric" placeholder="${lt&&(lt.rows[i]||lt.rows[0])?esc((lt.rows[i]||lt.rows[0]).reps):'0'}" value="${esc(r.reps||'')}" oninput="setField('w${i}','reps',this.value)"><span>reps</span></div>
         </div>
       </div>`;}).join('')}
@@ -599,13 +626,17 @@ function skipGWU(){ const L=L_(); L.gwuSkipped=true; save(); render(); }
 function setWU(n){ const E=E_(); E.wu=Math.max(0,Math.min(4,E.wu+n)); save(); render(); }
 function setWS(n){ const E=E_(); E.ws=Math.max(1,Math.min(8,E.ws+n)); save(); render(); }
 function setSub(i){ const E=E_(); E.sub=i; save(); render(); }
-function setField(k,f,v){ const E=E_(); E.sets[k]=E.sets[k]||{}; E.sets[k][f]=v; save(); }
+function setField(k,f,v){ const E=E_(), day=dayAt(S.week,S.day);
+  E.sets[k]=E.sets[k]||{}; E.sets[k][f]=v;
+  if(!E.sets[k].unit) E.sets[k].unit=exUnitOf(day.e[cur].n);
+  save(); }
 function tickSet(k,low,high){
   unlockAudio();
   const E=E_(), day=dayAt(S.week,S.day), ex=day.e[cur];
   E.sets[k]=E.sets[k]||{};
   const now=!E.sets[k].done;
   E.sets[k].done=now; E.sets[k].ts=Date.now();
+  if(!E.sets[k].unit) E.sets[k].unit=exUnitOf(ex.n);
   if(now)E.later=false;
   save();
   if(now){
@@ -640,7 +671,7 @@ function finishHTML(){
   const w=S.week,d=S.day,L=S.log[key(w,d)],day=dayAt(w,d);
   const st=dayStats(w,d);
   let vol=0,cnt=0;
-  day.e.forEach((ex,i)=>{ const e=L.ex[i]; if(!e)return; Object.keys(e.sets).forEach(k=>{ const r=e.sets[k]; if(r.done&&k[0]==='w'&&k[1]!=='u'){ cnt++; if(r.weight&&r.reps)vol+=parseFloat(r.weight)*parseFloat(r.reps); } }); });
+  day.e.forEach((ex,i)=>{ const e=L.ex[i]; if(!e)return; Object.keys(e.sets).forEach(k=>{ const r=e.sets[k]; if(r.done&&k[0]==='w'&&k[1]!=='u'){ cnt++; if(r.weight&&r.reps)vol+=conv(r.weight,setUnit(r),S.unit)*parseFloat(r.reps); } }); });
   let first=null;
   day.e.forEach((ex,i)=>{ const e=L.ex[i]; if(!e)return; Object.keys(e.sets).forEach(k=>{ const t=e.sets[k].ts; if(t&&(!first||t<first))first=t; }); });
   const mins=L.finished&&first?Math.max(1,Math.round((L.finished-first)/60000)):null;
@@ -686,7 +717,7 @@ function sessionRows(w,d){
 }
 function sessionSummary(w,d){
   const rows=sessionRows(w,d)||[]; let sets=0,vol=0,ex=0;
-  rows.forEach(r=>{ if(r.work.length)ex++; r.work.forEach(x=>{ sets++; if(x.weight&&x.reps)vol+=parseFloat(x.weight)*parseFloat(x.reps); }); });
+  rows.forEach(r=>{ if(r.work.length)ex++; r.work.forEach(x=>{ sets++; if(x.weight&&x.reps)vol+=conv(x.weight,setUnit(x),S.unit)*parseFloat(x.reps); }); });
   return {sets,vol,ex,rows};
 }
 function logKeys(){
@@ -694,7 +725,7 @@ function logKeys(){
     .filter(Boolean).sort((a,b)=>(b.w*10+b.d)-(a.w*10+a.d));
 }
 function fmtDate(t){ if(!t)return ''; const d=new Date(t); return d.toLocaleDateString(undefined,{day:'numeric',month:'short'}); }
-function best(rows){ let b=0; rows.forEach(r=>{ const v=(parseFloat(r.weight)||0); if(v>b)b=v; }); return b; }
+function best(rows,u){ let b=0; rows.forEach(r=>{ const v=conv(r.weight,setUnit(r),u||S.unit); if(v>b)b=v; }); return b; }
 
 function historyHTML(){
   const items=logKeys();
@@ -724,12 +755,12 @@ function sessionHTML(){
     </div>
     <div class="plist" style="padding:0 14px">
       ${sm.rows.map(r=>{
-        const bw=best(r.work);
+        const bu=exUnitOf(r.key), bw=best(r.work,bu);
         return `<div class="hex">
           <div class="hxn"><button style="text-align:left;flex:1;font:inherit" onclick="openExHist('${esc(r.key).replace(/'/g,"\\'")}','session')">${esc(r.name)}</button><small>target ${esc(r.target)}</small></div>
           ${(r.wu.length||r.work.length)?`<div class="sets">
-            ${r.wu.map(x=>`<span class="sbox wu">${x.weight?esc(x.weight):'warm up'}${x.weight&&x.reps?' <i>x</i> '+esc(x.reps):''}</span>`).join('')}
-            ${r.work.map(x=>`<span class="sbox ${bw&&parseFloat(x.weight)===bw?'best':''}">${x.weight?esc(x.weight)+' ':''}${x.weight&&x.reps?'<i>x</i> '+esc(x.reps):(x.reps?esc(x.reps)+' reps':'done')}</span>`).join('')}
+            ${r.wu.map(x=>`<span class="sbox wu">${x.weight?esc(x.weight)+setUnit(x):'warm up'}${x.weight&&x.reps?' <i>x</i> '+esc(x.reps):''}</span>`).join('')}
+            ${r.work.map(x=>`<span class="sbox ${bw&&conv(x.weight,setUnit(x),bu)===bw?'best':''}">${x.weight?esc(x.weight)+setUnit(x)+' ':''}${x.weight&&x.reps?'<i>x</i> '+esc(x.reps):(x.reps?esc(x.reps)+' reps':'done')}</span>`).join('')}
           </div>`:'<div class="hempty">Not logged</div>'}
         </div>`;}).join('')}
     </div>
@@ -748,18 +779,19 @@ function exHistHTML(){
       if(rows.length)hits.push({w:it.w,d:it.d,rows,ts:S.log[it.k].finished,target:ex.ws+' x '+ex.r});
     });
   });
-  const tops=hits.map(h=>best(h.rows));
+  const hu=exUnitOf(name);
+  const tops=hits.map(h=>Math.round(best(h.rows,hu)*10)/10);
   const peak=Math.max.apply(null,tops.concat([0]));
   return `<div class="screen"><div class="hhead"><button class="xbtn" onclick="view='${histBack}';render()">‹</button><h1>${esc(name)}</h1></div>
     ${hits.length?`
       <div class="gridwrap">
-        <div style="font-size:13px;color:var(--muted)">Top set each session${peak?', best was <b class="num" style="color:var(--chalk)">'+peak+' '+S.unit+'</b>':''}</div>
+        <div style="font-size:13px;color:var(--muted)">Top set each session, shown in ${hu}${peak?', best was <b class="num" style="color:var(--chalk)">'+peak+' '+hu+'</b>':''}</div>
         <div class="trendbar">${tops.map(t=>`<i class="${peak&&t===peak?'top':''}" style="height:${peak?Math.max(8,100*t/peak):8}%"></i>`).join('')}</div>
       </div>
       <div class="plist" style="padding:0 14px;margin-top:12px">
         ${hits.slice().reverse().map(h=>`<div class="prow">
           <span class="pw">w${h.w} d${h.d}</span>
-          <span style="flex:1"><span class="sets" style="margin:0">${h.rows.map(x=>`<span class="sbox">${x.weight?esc(x.weight)+' ':''}${x.weight&&x.reps?'<i>x</i> '+esc(x.reps):(x.reps?esc(x.reps)+' reps':'done')}</span>`).join('')}</span></span>
+          <span style="flex:1"><span class="sets" style="margin:0">${h.rows.map(x=>`<span class="sbox">${x.weight?esc(x.weight)+setUnit(x)+' ':''}${x.weight&&x.reps?'<i>x</i> '+esc(x.reps):(x.reps?esc(x.reps)+' reps':'done')}</span>`).join('')}</span></span>
         </div>`).join('')}
       </div>`
     :'<p style="color:var(--muted);font-size:15px">No sets logged for this exercise yet.</p>'}
@@ -789,13 +821,17 @@ function openSettings(){
       <button class="${(S.theme||'auto')==='auto'?'on':''}" onclick="setOpt('theme','auto')">Auto</button>
       <button class="${S.theme==='light'?'on':''}" onclick="setOpt('theme','light')">Light</button>
       <button class="${S.theme==='dark'?'on':''}" onclick="setOpt('theme','dark')">Dark</button></span></div>
-    <div class="optrow"><span>Weight unit</span><span class="seg">
+    <div class="optrow"><span>Default unit for new exercises</span><span class="seg">
       <button class="${S.unit==='kg'?'on':''}" onclick="setOpt('unit','kg')">kg</button>
       <button class="${S.unit==='lb'?'on':''}" onclick="setOpt('unit','lb')">lb</button></span></div>
-    <div class="optrow"><span>Round warm up weights to</span><span class="seg">
+    <div class="optrow"><span>Round warm ups, kg</span><span class="seg">
       <button class="${S.round===1?'on':''}" onclick="setOpt('round',1)">1</button>
       <button class="${S.round===2.5?'on':''}" onclick="setOpt('round',2.5)">2.5</button>
       <button class="${S.round===5?'on':''}" onclick="setOpt('round',5)">5</button></span></div>
+    <div class="optrow"><span>Round warm ups, lb</span><span class="seg">
+      <button class="${S.roundLb===2.5?'on':''}" onclick="setOpt('roundLb',2.5)">2.5</button>
+      <button class="${S.roundLb===5?'on':''}" onclick="setOpt('roundLb',5)">5</button>
+      <button class="${S.roundLb===10?'on':''}" onclick="setOpt('roundLb',10)">10</button></span></div>
     <div class="optrow"><span>Beep when rest is up</span><button class="switch ${S.beep?'on':''}" onclick="setOpt('beep',${!S.beep})"><i></i></button></div>
     <div class="optrow"><span>Time warm up sets too</span><button class="switch ${S.wuTimer?'on':''}" onclick="setOpt('wuTimer',${!S.wuTimer})"><i></i></button></div>
     <div style="height:18px"></div>
